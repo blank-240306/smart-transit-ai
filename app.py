@@ -144,73 +144,30 @@ def get_vehicle_data(selected_stop=None, traffic_index=0.5):
     
     return pd.DataFrame(vehicle_data)
 
-def create_map_layer(vehicle_df, selected_stop=None):
-    """Create pydeck layers for the map."""
-    if vehicle_df.empty:
-        return []
-    
-    # Vehicle layer
-    vehicle_layer = pdk.Layer(
-        "ScatterplotLayer",
-        vehicle_df,
-        get_position=["longitude", "latitude"],
-        get_color="[200, 30, 0, 160]",  # Reddish color for buses
-        get_radius="speed",  # Size based on speed
-        radius_scale=2,
-        radius_min_pixels=5,
-        radius_max_pixels=30,
-        pickable=True,
-    )
-    
-    layers = [vehicle_layer]
-    
-    # Add selected stop marker if available
-    if selected_stop:
-        stops = get_route_stops()
-        for stop in stops:
-            if stop['stop_name'] == selected_stop:
-                stop_layer = pdk.Layer(
-                    "ScatterplotLayer",
-                    pd.DataFrame([{
-                        'longitude': stop['longitude'],
-                        'latitude': stop['latitude'],
-                        'name': stop['stop_name']
-                    }]),
-                    get_position=["longitude", "latitude"],
-                    get_color="[0, 150, 0, 200]",  # Green for stops
-                    get_radius=100,
-                    radius_scale=1,
-                    pickable=True,
-                )
-                layers.append(stop_layer)
-                break
-    
-    return layers
-
 def main():
     """Main Streamlit application."""
     st.set_page_config(
         page_title="Smart Transit AI",
-        page_icon="🚌",
+        page_icon=None,
         layout="wide"
     )
     
-    st.title("🚌 Smart Public Transport Route Tracking System")
+    st.title("Smart Public Transport Route Tracking System")
     st.markdown("### Real-time bus tracking with AI-powered ETA predictions")
     
     # Initialize app if needed
     initialize_app()
     
-    # Initialize session state for simulation control
+    # Initialize session state for simulation control and route change flag
     if 'simulation_running' not in st.session_state:
         st.session_state.simulation_running = True
-    if 'last_update' not in st.session_state:
-        st.session_state.last_update = time.time()
-    if 'vehicle_df' not in st.session_state:
-        st.session_state.vehicle_df = pd.DataFrame()
+    if 'route_change_triggered' not in st.session_state:
+        st.session_state.route_change_triggered = False
+    if 'update_interval' not in st.session_state:
+        st.session_state.update_interval = 3
     
     # Sidebar controls
-    st.sidebar.header("⚙️ Controls")
+    st.sidebar.header("Controls")
     
     # Stop selector
     stops = get_route_stops()
@@ -235,12 +192,14 @@ def main():
     )
     
     # Alert Settings
-    st.sidebar.header("🚨 Alert Settings")
+    st.sidebar.header("Alert Settings")
     alert_threshold = st.sidebar.slider("Alert me when bus is within (min)", 1, 15, 5, help="Trigger an alert when ETA to selected stop is at or below this threshold")
-    simulate_route_change = st.sidebar.button("Simulate route change", help="Generate a route change alert for testing")
+    # Route change button
+    if st.sidebar.button("Simulate route change", help="Generate a route change alert for testing"):
+        st.session_state.route_change_triggered = True
     
     # Simulation controls
-    st.sidebar.header("🎮 Simulation")
+    st.sidebar.header("Simulation")
     # Update the session state based on the checkbox
     simulation_running = st.sidebar.checkbox("Run Live Simulation", value=st.session_state.simulation_running)
     st.session_state.simulation_running = simulation_running
@@ -251,210 +210,223 @@ def main():
         value=3,
         help="How often to update vehicle positions"
     )
+    st.session_state.update_interval = update_interval
     
     # Create tabs
-    tab_dashboard, tab_evaluation = st.tabs(["📊 Dashboard", "📈 Evaluation"])
+    tab_dashboard, tab_evaluation = st.tabs(["Dashboard", "Evaluation"])
     
     # Dashboard tab content
     with tab_dashboard:
-        # Initialize placeholders for the dashboard components
-        map_placeholder = st.empty()
-        table_placeholder = st.empty()
-        eta_placeholder = st.empty()
-        alert_placeholder = st.empty()
-        status_placeholder = st.empty()
-        
-        # Main dashboard
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.subheader("🗺️ Live Vehicle Map")
-            # Create placeholder for map
-            map_placeholder = st.empty()
-        
-        with col2:
-            st.subheader("📊 Vehicle Information")
-            # Create placeholder for vehicle table
-            table_placeholder = st.empty()
-            
-            # ETA information
-            st.subheader("⏱️ ETA Information")
-            eta_placeholder = st.empty()
-            
-            # Alert panel
-            st.subheader("🚨 Alerts")
-            alert_placeholder = st.empty()
-        
-        # Status indicator
-        status_placeholder = st.empty()
-        
-        # Check if it's time to update
-        current_time = time.time()
-        time_to_update = (current_time - st.session_state.last_update) >= update_interval
-        
-        # Update vehicle data if simulation is running and time to update
-        if st.session_state.simulation_running and time_to_update:
-            # Start timing for response time measurement
+        # Define the live dashboard fragment
+        @st.fragment(run_every=st.session_state.update_interval if st.session_state.simulation_running else None)
+        def show_live_dashboard():
+            # Measure response time for this fragment run
             start_time = time.perf_counter()
             
-            st.session_state.last_update = current_time
-            st.session_state.vehicle_df = get_vehicle_data(selected_stop, traffic_index)
+            # Prepare vehicle list for alert checking (list of dicts)
+            vehicle_df = get_vehicle_data(selected_stop, traffic_index)
+            vehicle_list = vehicle_df.to_dict('records') if not vehicle_df.empty else []
+            
+            # Check for new alerts and log them (functions will handle duplicate suppression)
+            new_alerts = []
+            if vehicle_list:  # Only check if we have vehicle data
+                new_alerts.extend(check_approaching_alerts(vehicle_list, selected_stop, alert_threshold))
+                new_alerts.extend(check_delay_alerts(vehicle_list, selected_stop, traffic_index))
+                new_alerts.extend(check_heavy_traffic_alert(traffic_index))
+                # Route change alert: check flag and consume it
+                if st.session_state.route_change_triggered:
+                    new_alerts.extend(check_route_change_alert(True))
+                    # Clear the flag after using it
+                    st.session_state.route_change_triggered = False
             
             # End timing and log response time
             end_time = time.perf_counter()
             duration_ms = (end_time - start_time) * 1000  # convert to milliseconds
             log_response_time(duration_ms)
             
-            # Trigger a rerun to update the display
-            st.rerun()
-        
-        # Display the data
-        vehicle_df = st.session_state.vehicle_df
-        
-        # Prepare vehicle list for alert checking (list of dicts)
-        vehicle_list = vehicle_df.to_dict('records') if not vehicle_df.empty else []
-        
-        # Check for new alerts and log them (functions will handle duplicate suppression)
-        new_alerts = []
-        if vehicle_list:  # Only check if we have vehicle data
-            new_alerts.extend(check_approaching_alerts(vehicle_list, selected_stop, alert_threshold))
-            new_alerts.extend(check_delay_alerts(vehicle_list, selected_stop, traffic_index))
-            new_alerts.extend(check_heavy_traffic_alert(traffic_index))
-            new_alerts.extend(check_route_change_alert(simulate_route_change))
-        
-        # Fetch latest alerts for display (this also marks them as delivered)
-        latest_alerts = get_latest_alerts(limit=10)
-        
-        with map_placeholder.container():
-            if not vehicle_df.empty:
-                layers = create_map_layer(vehicle_df, selected_stop)
-                
-                if layers:
-                    # Set initial view to Lagos area
-                    view_state = pdk.ViewState(
-                        latitude=6.55,
-                        longitude=3.35,
-                        zoom=12,
-                        pitch=0
-                    )
-                    
-                    deck = pdk.Deck(
-                        layers=layers,
-                        initial_view_state=view_state,
-                        tooltip={
-                            "html": "<b>Vehicle ID:</b> {vehicle_id}<br/>"
-                                   "<b>Speed:</b> {speed} km/h<br/>"
-                                   "<b>ETA:</b> {eta_min} min<br/>"
-                                   "<b>Distance to stop:</b> {distance_to_stop_km} km",
-                            "style": {"backgroundColor": "steelblue", "color": "white"}
-                        }
-                    )
-                    
-                    st.pydeck_chart(deck)
-                else:
-                    st.info("No vehicle data available for map")
-            else:
-                st.info("No vehicle data available")
-        
-        with table_placeholder.container():
-            if not vehicle_df.empty:
-                # Prepare display dataframe
-                display_df = vehicle_df.copy()
-                if selected_stop:
-                    display_cols = ['vehicle_id', 'speed', 'distance_to_stop_km', 'eta_min']
-                    display_df = display_df[display_cols].rename(columns={
-                        'vehicle_id': 'Vehicle ID',
-                        'speed': 'Speed (km/h)',
-                        'distance_to_stop_km': f'Dist to {selected_stop} (km)',
-                        'eta_min': 'ETA (min)'
-                    })
-                else:
-                    display_cols = ['vehicle_id', 'speed']
-                    display_df = display_df[display_cols].rename(columns={
-                        'vehicle_id': 'Vehicle ID',
-                        'speed': 'Speed (km/h)'
-                    })
-                
-                st.dataframe(display_df, hide_index=True)
-                
-                # Show ETA summary
-                if selected_stop and 'eta_min' in vehicle_df.columns:
-                    valid_etas = vehicle_df['eta_min'].dropna()
-                    if len(valid_etas) > 0:
-                        avg_eta = valid_etas.mean()
-                        min_eta = valid_etas.min()
-                        max_eta = valid_etas.max()
+            # Fetch latest alerts for display (this also marks them as delivered)
+            latest_alerts = get_latest_alerts(limit=10)
+            
+            # Layout with columns
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.subheader("Live Vehicle Map")
+                if not vehicle_df.empty:
+                    # Create pydeck layers for the map
+                    def create_map_layer(vehicle_df_local, selected_stop_local=None):
+                        if vehicle_df_local.empty:
+                            return []
+                        # Vehicle layer
+                        vehicle_layer = pdk.Layer(
+                            "ScatterplotLayer",
+                            vehicle_df_local,
+                            get_position=["longitude", "latitude"],
+                            get_color="[200, 30, 0, 160]",  # Reddish color for buses
+                            get_radius="speed",  # Size based on speed
+                            radius_scale=2,
+                            radius_min_pixels=5,
+                            radius_max_pixels=30,
+                            pickable=True,
+                        )
                         
-                        eta_info = f"""
-                        **To {selected_stop}:**
-                        - Average ETA: {avg_eta:.1f} minutes
-                        - Fastest: {min_eta:.1f} minutes  
-                        - Slowest: {max_eta:.1f} minutes
-                        - Vehicles reporting: {len(valid_etas)}/{len(vehicle_df)}
-                        """
-                        st.info(eta_info)
+                        layers = [vehicle_layer]
+                        
+                        # Add selected stop marker if available
+                        if selected_stop_local:
+                            stops_local = get_route_stops()
+                            for stop in stops_local:
+                                if stop['stop_name'] == selected_stop_local:
+                                    stop_layer = pdk.Layer(
+                                        "ScatterplotLayer",
+                                        pd.DataFrame([{
+                                            'longitude': stop['longitude'],
+                                            'latitude': stop['latitude'],
+                                            'name': stop['stop_name']
+                                        }]),
+                                        get_position=["longitude", "latitude"],
+                                        get_color="[0, 150, 0, 200]",  # Green for stops
+                                        get_radius=100,
+                                        radius_scale=1,
+                                        pickable=True,
+                                    )
+                                    layers.append(stop_layer)
+                                    break
+                        return layers
+                    
+                    layers = create_map_layer(vehicle_df, selected_stop)
+                    
+                    if layers:
+                        # Set initial view to Lagos area
+                        view_state = pdk.ViewState(
+                            latitude=6.55,
+                            longitude=3.35,
+                            zoom=12,
+                            pitch=0
+                        )
+                        
+                        deck = pdk.Deck(
+                            layers=layers,
+                            initial_view_state=view_state,
+                            tooltip={
+                                "html": "<b>Vehicle ID:</b> {vehicle_id}<br/>"
+                                       "<b>Speed:</b> {speed} km/h<br/>"
+                                       "<b>ETA:</b> {eta_min} min<br/>"
+                                       "<b>Distance to stop:</b> {distance_to_stop_km} km",
+                                "style": {"backgroundColor": "steelblue", "color": "white"}
+                            }
+                        )
+                        
+                        st.pydeck_chart(deck)
                     else:
-                        st.warning("No ETA data available")
+                        st.info("No vehicle data available for map")
                 else:
-                    st.info("Select a stop to see ETA predictions")
-            else:
-                st.info("No vehicle data available")
-        
-        with alert_placeholder.container():
-            if latest_alerts:
-                # Define alert type styles: (border_color, background_color)
-                alert_styles = {
-                    'approaching': ("#ff9800", "rgba(255,152,0,0.12)"),   # orange
-                    'delay': ("#f44336", "rgba(244,67,54,0.12)"),        # red
-                    'heavy_traffic': ("#d32f2f", "rgba(211,47,47,0.12)"), # dark red
-                    'route_change': ("#2196f3", "rgba(33,150,243,0.12)"), # blue
-                }
+                    st.info("No vehicle data available")
+            
+            with col2:
+                st.subheader("Vehicle Information")
+                if not vehicle_df.empty:
+                    # Prepare display dataframe
+                    display_df = vehicle_df.copy()
+                    if selected_stop:
+                        display_cols = ['vehicle_id', 'speed', 'distance_to_stop_km', 'eta_min']
+                        display_df = display_df[display_cols].rename(columns={
+                            'vehicle_id': 'Vehicle ID',
+                            'speed': 'Speed (km/h)',
+                            'distance_to_stop_km': f'Dist to {selected_stop} (km)',
+                            'eta_min': 'ETA (min)'
+                        })
+                    else:
+                        display_cols = ['vehicle_id', 'speed']
+                        display_df = display_df[display_cols].rename(columns={
+                            'vehicle_id': 'Vehicle ID',
+                            'speed': 'Speed (km/h)'
+                        })
+                    
+                    st.dataframe(display_df, hide_index=True)
+                    
+                    # Show ETA summary
+                    if selected_stop and 'eta_min' in vehicle_df.columns:
+                        valid_etas = vehicle_df['eta_min'].dropna()
+                        if len(valid_etas) > 0:
+                            avg_eta = valid_etas.mean()
+                            min_eta = valid_etas.min()
+                            max_eta = valid_etas.max()
+                            
+                            eta_info = f"""
+                            **To {selected_stop}:**
+                            - Average ETA: {avg_eta:.1f} minutes
+                            - Fastest: {min_eta:.1f} minutes  
+                            - Slowest: {max_eta:.1f} minutes
+                            - Vehicles reporting: {len(valid_etas)}/{len(vehicle_df)}
+                            """
+                            st.info(eta_info)
+                        else:
+                            st.warning("No ETA data available")
+                    else:
+                        st.info("Select a stop to see ETA predictions")
+                else:
+                    st.info("No vehicle data available")
                 
-                for alert in latest_alerts:
-                    alert_type = alert['alert_type']
-                    icon = "🚍" if alert_type == 'approaching' else \
-                           "⏰" if alert_type == 'delay' else \
-                           "🚧" if alert_type == 'heavy_traffic' else \
-                           "🔄" if alert_type == 'route_change' else "ℹ️"
+                st.subheader("Alerts")
+                if latest_alerts:
+                    # Define alert type styles: (border_color, background_color)
+                    alert_styles = {
+                        'approaching': ("#ff9800", "rgba(255,152,0,0.12)"),   # orange
+                        'delay': ("#f44336", "rgba(244,67,54,0.12)"),        # red
+                        'heavy_traffic': ("#d32f2f", "rgba(211,47,47,0.12)"), # dark red
+                        'route_change': ("#2196f3", "rgba(33,150,243,0.12)"), # blue
+                    }
                     
-                    # Get style for this alert type, with safe defaults
-                    border_color, bg_color = alert_styles.get(alert_type, ("#9e9e9e", "rgba(158,158,158,0.12)"))  # gray default
-                    
-                    # Format timestamp for display
-                    sent_time = alert['sent_timestamp']
-                    if isinstance(sent_time, str):
-                        # If it's a string from database, try to parse
-                        try:
-                            sent_time = datetime.strptime(sent_time, '%Y-%m-%d %H:%M:%S')
-                        except:
-                            sent_time = datetime.now()  # fallback
-                    # Format as HH:MM:SS
-                    time_str = sent_time.strftime('%H:%M:%S')
-                    
-                    # Display alert with colored background
-                    st.markdown(
-                        f"""
-                        <div style="
-                            border-left: 4px solid {border_color}; 
-                            padding: 0.5rem 1rem; 
-                            margin: 0.5rem 0;
-                            background-color: {bg_color};">
-                            <span style="font-size: 1.2em;">{icon}</span> 
-                            <strong>{alert_type.upper()}</strong> [{time_str}]<br/>
-                            {alert['message']}
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-            else:
-                st.info("No alerts yet")
+                    for alert in latest_alerts:
+                        alert_type = alert['alert_type']
+                        icon = "[APPROACHING]" if alert_type == 'approaching' else \
+                               "[DELAY]" if alert_type == 'delay' else \
+                               "[TRAFFIC]" if alert_type == 'heavy_traffic' else \
+                               "[ROUTE]" if alert_type == 'route_change' else ""
+                        
+                        # Get style for this alert type, with safe defaults
+                        border_color, bg_color = alert_styles.get(alert_type, ("#9e9e9e", "rgba(158,158,158,0.12)"))  # gray default
+                        
+                        # Format timestamp for display
+                        sent_time = alert['sent_timestamp']
+                        if isinstance(sent_time, str):
+                            # If it's a string from database, try to parse
+                            try:
+                                sent_time = datetime.strptime(sent_time, '%Y-%m-%d %H:%M:%S')
+                            except:
+                                sent_time = datetime.now()  # fallback
+                        # Format as HH:MM:SS
+                        time_str = sent_time.strftime('%H:%M:%S')
+                        
+                        # Display alert with colored background
+                        st.markdown(
+                            f"""
+                            <div style="
+                                border-left: 4px solid {border_color}; 
+                                padding: 0.5rem 1rem; 
+                                margin: 0.5rem 0;
+                                background-color: {bg_color};">
+                                <span style="font-size: 1.2em;">{icon}</span> 
+                                <strong>{alert_type.upper()}</strong> [{time_str}]<br/>
+                                {alert['message']}
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.info("No alerts yet")
+                
+                # Status indicator
+                status_text = f"Last updated: {datetime.fromtimestamp(time.time()).strftime('%H:%M:%S')} | Simulation: {'Running' if st.session_state.simulation_running else 'Stopped'} | Alerts logged: {len(new_alerts)}"
+                st.caption(status_text)
         
-        # Status indicator
-        status_placeholder.caption(f"Last updated: {datetime.fromtimestamp(st.session_state.last_update).strftime('%H:%M:%S')} | Simulation: {'Running' if st.session_state.simulation_running else 'Stopped'} | Alerts logged: {len(new_alerts)}")
+        # Call the fragment to render the live dashboard
+        show_live_dashboard()
     
     # Evaluation tab content
     with tab_evaluation:
-        st.header("📈 Evaluation Metrics")
+        st.header("Evaluation Metrics")
         
         # 1. Prediction error
         st.subheader("1. Prediction Error (Test Set)")
@@ -538,12 +510,6 @@ def main():
                 st.markdown(f"*Rating: {fb['rating']}/5* - {fb['comment']} (*{fb['timestamp']}*)")
         else:
             st.info("No feedback yet")
-    
-    # Auto-refresh logic for live simulation (runs after the tabs are rendered)
-    if st.session_state.simulation_running:
-        # Sleep for the update interval then rerun to advance simulation
-        time.sleep(update_interval)
-        st.rerun()
 
 if __name__ == "__main__":
     main()
