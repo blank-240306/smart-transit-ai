@@ -5,10 +5,14 @@ import os
 import sys
 from datetime import datetime, timedelta
 import random
+import math
 
 # Add the src directory to the path so we can import db
 sys.path.append(os.path.join(os.path.dirname(__file__)))
-from db import init_db, insert_journey, insert_vehicle_position
+from db import init_db, insert_journey, insert_vehicle_position, execute_query
+
+# Global dictionary to store vehicle state between calls
+_vehicle_states = {}
 
 def generate_lagos_route():
     """Generate a seed route with 5 stops in Lagos area."""
@@ -24,7 +28,135 @@ def generate_lagos_route():
     ]
     return stops
 
-def generate_historical_journeys(num_records=6000):
+def haversine(lat1, lon1, lat2, lon2):
+    """Calculate the great circle distance between two points on the earth (specified in decimal degrees)"""
+    # Convert decimal degrees to radians
+    lon1, lat1, lon2, lat2 = map(math.radians, [lon1, lat1, lon2, lat2])
+    # Haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+    c = 2 * math.asin(math.sqrt(a))
+    r = 6371  # Radius of earth in kilometers
+    return c * r
+
+def get_vehicle_positions():
+    """Get current simulated positions for all vehicles along the route.
+    Returns a list of dictionaries with vehicle position data.
+    This function can be swapped for real GPS data later without changing app.py.
+    Maintains vehicle state between calls for continuous movement."""
+    global _vehicle_states
+    
+    # Initialize route and vehicle data if not already done
+    conn = sqlite3.connect(os.path.join("data", "transit.db"))
+    cursor = conn.cursor()
+    
+    # Get route stops
+    cursor.execute("""SELECT stop_name, latitude, longitude, stop_order 
+                     FROM stops WHERE route_id = 1 ORDER BY stop_order""")
+    stops = cursor.fetchall()
+    
+    if not stops:
+        # Initialize if no data exists
+        conn.close()
+        initialize_route_and_stops()
+        conn = sqlite3.connect(os.path.join("data", "transit.db"))
+        cursor = conn.cursor()
+        cursor.execute("""SELECT stop_name, latitude, longitude, stop_order 
+                         FROM stops WHERE route_id = 1 ORDER BY stop_order""")
+        stops = cursor.fetchall()
+    
+    # Get vehicles
+    cursor.execute("SELECT vehicle_id FROM vehicles WHERE route_id = 1")
+    vehicles = cursor.fetchall()
+    conn.close()
+    
+    # If no vehicles, return empty list
+    if not vehicles:
+        return []
+    
+    # Initialize vehicle states if not present
+    route_length = len(stops)
+    for vehicle_tuple in vehicles:
+        vehicle_id = vehicle_tuple[0]
+        if vehicle_id not in _vehicle_states:
+            # Initialize with random position and speed
+            _vehicle_states[vehicle_id] = {
+                'progress': random.random(),  # Random progress from 0 to 1
+                'speed': random.uniform(15.0, 35.0),  # Initial speed
+                'last_update': datetime.now()
+            }
+    
+    # Simulate vehicle positions along the route
+    positions = []
+    
+    for vehicle_tuple in vehicles:
+        vehicle_id = vehicle_tuple[0]
+        state = _vehicle_states[vehicle_id]
+        
+        # Update vehicle progress based on speed and time elapsed
+        time_elapsed = (datetime.now() - state['last_update']).total_seconds()
+        # Assume speed is in km/h, convert to km/sec, then to progress units
+        # Route length in stops, so progress increment = (speed_kmph * time_sec / 3600) / avg_distance_per_stop
+        # For simplicity, we'll use a fixed increment based on speed
+        progress_increment = (state['speed'] * time_elapsed) / 3600 / 5  # Assuming ~5km between stops
+        state['progress'] += progress_increment
+        # Keep progress within 0-1 range (loop around)
+        state['progress'] = state['progress'] % 1.0
+        
+        # Occasionally update speed to simulate traffic changes
+        if random.random() < 0.1:  # 10% chance to change speed
+            hour = datetime.now().hour
+            base_speed = 25.0  # Base speed km/h
+            
+            # Simulate rush hour traffic (slower speeds)
+            if 7 <= hour <= 9 or 17 <= hour <= 19:  # Rush hours
+                speed_factor = random.uniform(0.5, 0.8)  # 50-80% of base speed
+            elif 22 <= hour or hour <= 5:  # Night
+                speed_factor = random.uniform(0.8, 1.2)  # 80-120% of base speed
+            else:  # Daytime
+                speed_factor = random.uniform(0.9, 1.1)  # 90-110% of base speed
+                
+            state['speed'] = base_speed * speed_factor
+        
+        # Find which segment the vehicle is on
+        segment_index = int(state['progress'] * (route_length - 1)) if route_length > 1 else 0
+        segment_index = min(segment_index, route_length - 2)  # Ensure we don't go out of bounds
+        
+        # Get current and next stop for interpolation
+        if segment_index + 1 < len(stops):
+            current_stop = stops[segment_index]
+            next_stop = stops[segment_index + 1]
+        else:
+            current_stop = stops[-1]
+            next_stop = stops[0]  # Loop back to start
+        
+        # Interpolate position between stops
+        segment_progress = (state['progress'] * (route_length - 1)) - segment_index
+        segment_progress = max(0, min(1, segment_progress))  # Clamp to 0-1
+        
+        lat = current_stop[1] + (next_stop[1] - current_stop[1]) * segment_progress
+        lon = current_stop[2] + (next_stop[2] - current_stop[2]) * segment_progress
+        
+        # Use current speed from state
+        speed = state['speed']
+        
+        # Add some random variation to position to simulate real GPS noise
+        lat += random.uniform(-0.001, 0.001)
+        lon += random.uniform(-0.001, 0.001)
+        
+        positions.append({
+            'vehicle_id': vehicle_id,
+            'latitude': lat,
+            'longitude': lon,
+            'speed': speed,
+            'timestamp': datetime.now()
+        })
+        
+        # Update last update time
+        state['last_update'] = datetime.now()
+    
+    return positions
     """Generate synthetic historical journey data."""
     stops = generate_lagos_route()
     route_id = 1  # Single route for simplicity
