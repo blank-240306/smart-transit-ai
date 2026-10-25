@@ -14,6 +14,13 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from simulator import get_vehicle_positions, generate_lagos_route, haversine
 from db import init_db, execute_query, insert_vehicle_position
 from predictor import predict_eta
+from alerts import (
+    check_approaching_alerts, 
+    check_delay_alerts, 
+    check_heavy_traffic_alert, 
+    check_route_change_alert,
+    get_latest_alerts
+)
 
 # Initialize database and check if we need to generate data
 def initialize_app():
@@ -218,6 +225,11 @@ def main():
         step=0.1,
         help="Adjust to simulate traffic conditions affecting ETAs"
     )
+        
+    # Alert Settings
+    st.sidebar.header("🚨 Alert Settings")
+    alert_threshold = st.sidebar.slider("Alert me when bus is within (min)", 1, 15, 5, help="Trigger an alert when ETA to selected stop is at or below this threshold")
+    simulate_route_change = st.sidebar.button("Simulate route change", help="Generate a route change alert for testing")
     
     # Simulation controls
     st.sidebar.header("🎮 Simulation")
@@ -248,6 +260,10 @@ def main():
         # ETA information
         st.subheader("⏱️ ETA Information")
         eta_placeholder = st.empty()
+        
+        # Alert panel
+        st.subheader("🚨 Alerts")
+        alert_placeholder = st.empty()
     
     # Status indicator
     status_placeholder = st.empty()
@@ -265,6 +281,20 @@ def main():
     
     # Display the data
     vehicle_df = st.session_state.vehicle_df
+    
+    # Prepare vehicle list for alert checking (list of dicts)
+    vehicle_list = vehicle_df.to_dict('records') if not vehicle_df.empty else []
+    
+    # Check for new alerts and log them (functions will handle duplicate suppression)
+    new_alerts = []
+    if vehicle_list:  # Only check if we have vehicle data
+        new_alerts.extend(check_approaching_alerts(vehicle_list, selected_stop, alert_threshold))
+        new_alerts.extend(check_delay_alerts(vehicle_list, selected_stop, traffic_index))
+        new_alerts.extend(check_heavy_traffic_alert(traffic_index))
+        new_alerts.extend(check_route_change_alert(simulate_route_change))
+    
+    # Fetch latest alerts for display (this also marks them as delivered)
+    latest_alerts = get_latest_alerts(limit=10)
     
     with map_placeholder.container():
         if not vehicle_df.empty:
@@ -341,8 +371,68 @@ def main():
         else:
             st.info("No vehicle data available")
     
+    with alert_placeholder.container():
+        if latest_alerts:
+            for alert in latest_alerts:
+                # Determine icon and color based on alert type
+                alert_type = alert['alert_type']
+                if alert_type == 'approaching':
+                    icon = "🚍"
+                    color = "orange"
+                elif alert_type == 'delay':
+                    icon = "⏰"
+                    color = "red"
+                elif alert_type == 'heavy_traffic':
+                    icon = "🚧"
+                    color = "darkred"
+                elif alert_type == 'route_change':
+                    icon = "🔄"
+                    color = "blue"
+                else:
+                    icon = "ℹ️"
+                    color = "gray"
+                
+                # Format timestamp for display
+                sent_time = alert['sent_timestamp']
+                if isinstance(sent_time, str):
+                    # If it's a string from database, try to parse
+                    try:
+                        sent_time = datetime.strptime(sent_time, '%Y-%m-%d %H:%M:%S')
+                    except:
+                        sent_time = datetime.now()  # fallback
+                # Format as HH:MM:SS
+                time_str = sent_time.strftime('%H:%M:%S')
+                
+                # Define alert type styles: (border_color, background_color)
+                alert_styles = {
+                    'approaching': ("#ff9800", "rgba(255,152,0,0.12)"),   # orange
+                    'delay': ("#f44336", "rgba(244,67,54,0.12)"),        # red
+                    'heavy_traffic': ("#d32f2f", "rgba(211,47,47,0.12)"), # dark red
+                    'route_change': ("#2196f3", "rgba(33,150,243,0.12)"), # blue
+                }
+                # Get style for this alert type, with safe defaults
+                border_color, bg_color = alert_styles.get(alert_type, ("#9e9e9e", "rgba(158,158,158,0.12)"))  # gray default
+                
+                # Display alert with colored background
+                st.markdown(
+                    f"""
+                    <div style="
+                        border-left: 4px solid {border_color}; 
+                        padding: 0.5rem 1rem; 
+                        margin: 0.5rem 0;
+                        background-color: {bg_color};">
+                        <span style="font-size: 1.2em;">{icon}</span> 
+                        <strong>{alert_type.upper()}</strong> [{time_str}]<br/>
+                        {alert['message']}
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+        else:
+            st.info("No alerts yet")
+    
     # Status indicator
-    status_placeholder.caption(f"Last updated: {datetime.fromtimestamp(st.session_state.last_update).strftime('%H:%M:%S')} | Simulation: {'Running' if st.session_state.simulation_running else 'Stopped'}")
+    status_placeholder.caption(f"Last updated: {datetime.fromtimestamp(st.session_state.last_update).strftime('%H:%M:%S')} | Simulation: {'Running' if st.session_state.simulation_running else 'Stopped'} | Alerts logged: {len(new_alerts)}")
     
     # Auto-refresh logic for live simulation
     if st.session_state.simulation_running:
