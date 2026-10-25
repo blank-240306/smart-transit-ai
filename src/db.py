@@ -98,6 +98,15 @@ def init_db():
             )
         """)
         
+        # Response times table for system performance monitoring
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS response_times (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                duration_ms REAL
+            )
+        """)
+        
         conn.commit()
 
 @contextmanager

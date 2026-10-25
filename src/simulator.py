@@ -157,6 +157,8 @@ def get_vehicle_positions():
         state['last_update'] = datetime.now()
     
     return positions
+
+def generate_historical_journeys(num_records=6000):
     """Generate synthetic historical journey data."""
     stops = generate_lagos_route()
     route_id = 1  # Single route for simplicity
@@ -183,47 +185,47 @@ def get_vehicle_positions():
         eta_min = round(base_time_hours * 60 * traffic_penalty, 2)
         
         data.append({
-            'vehicle_id': vehicle_id,
-            'route_id': route_id,
-            'hour': hour,
-            'day_of_week': day_of_week,
-            'distance_km': distance_km,
-            'speed_kmh': speed_kmh,
-            'traffic_index': traffic_index,
-            'stops_left': stops_left,
-            'eta_min': eta_min
+        'vehicle_id': vehicle_id,
+        'route_id': route_id,
+        'hour': hour,
+        'day_of_week': day_of_week,
+        'distance_km': distance_km,
+        'speed_kmh': speed_kmh,
+        'traffic_index': traffic_index,
+        'stops_left': stops_left,
+        'eta_min': eta_min
         })
     
     df = pd.DataFrame(data)
     return df
 
 def save_to_csv(df, filename="journeys.csv"):
-    """Save DataFrame to CSV in data directory."""
+    """Save DataFrame to CSV in data directory."""  
     filepath = os.path.join("data", filename)
     df.to_csv(filepath, index=False)
     print(f"Saved {len(df)} records to {filepath}")
 
 def populate_database(df):
-    """Insert generated journey data into database."""
+    """Insert generated journey data into database."""  
     print("Populating database with journey data...")
     
     for _, row in df.iterrows():
         insert_journey(
-            vehicle_id=row['vehicle_id'],
-            route_id=row['route_id'],
-            hour=int(row['hour']),
-            day_of_week=int(row['day_of_week']),
-            distance_km=float(row['distance_km']),
-            speed_kmh=float(row['speed_kmh']),
-            traffic_index=float(row['traffic_index']),
-            stops_left=int(row['stops_left']),
-            eta_min=float(row['eta_min'])
+        vehicle_id=row['vehicle_id'],
+        route_id=row['route_id'],
+        hour=int(row['hour']),
+        day_of_week=int(row['day_of_week']),
+        distance_km=float(row['distance_km']),
+        speed_kmh=float(row['speed_kmh']),
+        traffic_index=float(row['traffic_index']),
+        stops_left=int(row['stops_left']),
+        eta_min=float(row['eta_min'])
         )
     
     print(f"Inserted {len(df)} journey records into database")
 
 def initialize_route_and_stops():
-    """Initialize route and stops in database."""
+    """Initialize route and stops in database."""  
     conn = sqlite3.connect(os.path.join("data", "transit.db"))
     cursor = conn.cursor()
     
@@ -242,16 +244,16 @@ def initialize_route_and_stops():
     stops = generate_lagos_route()
     for stop in stops:
         cursor.execute(
-            """INSERT INTO stops (route_id, stop_name, latitude, longitude, stop_order) 
-               VALUES (?, ?, ?, ?, ?)""",
-            (1, stop['name'], stop['lat'], stop['lon'], stop['order'])
+        """INSERT INTO stops (route_id, stop_name, latitude, longitude, stop_order) 
+           VALUES (?, ?, ?, ?, ?)""",
+        (1, stop['name'], stop['lat'], stop['lon'], stop['order'])
         )
     
     # Insert sample vehicles
     for i in range(1, 21):  # 20 vehicles
         cursor.execute(
-            "INSERT INTO vehicles (vehicle_id, route_id, capacity) VALUES (?, ?, ?)",
-            (f"BUS{i:03d}", 1, 50)
+        "INSERT INTO vehicles (vehicle_id, route_id, capacity) VALUES (?, ?, ?)",
+        (f"BUS{i:03d}", 1, 50)
         )
     
     conn.commit()
@@ -259,7 +261,7 @@ def initialize_route_and_stops():
     print("Initialized route, stops, and vehicles in database")
 
 def main():
-    """Main function to generate data and populate database."""
+    """Main function to generate data and populate database."""  
     # Initialize database
     init_db()
     
